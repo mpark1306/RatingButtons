@@ -1,149 +1,87 @@
 #include <Arduino.h>
+#include "esp_sleep.h"
 
-// LED pins
-static const uint8_t LED_PIN_RED    = 13;  // D13
-static const uint8_t LED_PIN_YELLOW = 14;  // D14
-static const uint8_t LED_PIN_BLUE   = 26;  // D26
-static const uint8_t LED_PIN_GREEN  = 33;  // D33
+// Define a struct to hold button pin, LED pin, and button name
+struct Button {
+  gpio_num_t buttonPin;   // GPIO number of the button
+  uint8_t ledPin;         // GPIO number of the LED
+  const char* name;       // Descriptive name of the button (used in Serial output)
+};
 
-// Button pins
-static const uint8_t BUTTON_PIN_RED    = 12; // D12
-static const uint8_t BUTTON_PIN_YELLOW = 27; // D27
-static const uint8_t BUTTON_PIN_BLUE   = 25; // D25
-static const uint8_t BUTTON_PIN_GREEN  = 32; // D32
+// List of button-LED pairs (GPIOs must support deep sleep wakeup)
+Button buttons[] = {
+  {GPIO_NUM_12, 19, "Red"},
+  {GPIO_NUM_27, 21, "Yellow"},
+  {GPIO_NUM_25, 22, "Blue"},
+  {GPIO_NUM_32, 23, "Green"}
+};
 
-// Debounce interval
-static const uint16_t DEBOUNCE_MS = 20;
+// Total number of button-LED pairs
+const size_t NUM_BUTTONS = sizeof(buttons) / sizeof(buttons[0]);
 
-// State tracking for RED
-uint8_t  lastStateRed    = HIGH;
-uint32_t lastDebounceRed = 0;
-
-// State tracking for YELLOW
-uint8_t  lastStateYellow    = HIGH;
-uint32_t lastDebounceYellow = 0;
-
-// State tracking for BLUE
-uint8_t  lastStateBlue    = HIGH;
-uint32_t lastDebounceBlue = 0;
-
-// State tracking for GREEN
-uint8_t  lastStateGreen    = HIGH;
-uint32_t lastDebounceGreen = 0;
+// Duration for which the LED stays ON after waking up (in milliseconds)
+const uint32_t LED_DURATION_MS = 7000;
 
 void setup() {
-  Serial.begin(115200);
-  while (!Serial) { delay(1); }
-  Serial.println("Ready. Press a button!");
+  Serial.begin(115200);    // Start serial communication
+  delay(1000);             // Give time for Serial Monitor to connect
 
-  // configure all buttons as INPUT_PULLUP
-  pinMode(BUTTON_PIN_RED,    INPUT_PULLUP);
-  pinMode(BUTTON_PIN_YELLOW, INPUT_PULLUP);
-  pinMode(BUTTON_PIN_BLUE,   INPUT_PULLUP);
-  pinMode(BUTTON_PIN_GREEN,  INPUT_PULLUP);
+  // Get the cause of wakeup from deep sleep
+  esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+  Button* pressedBtn = nullptr;  // Will point to the button that caused wakeup
 
-  // configure all LEDs as OUTPUT, start LOW
-  pinMode(LED_PIN_RED,    OUTPUT);
-  pinMode(LED_PIN_YELLOW, OUTPUT);
-  pinMode(LED_PIN_BLUE,   OUTPUT);
-  pinMode(LED_PIN_GREEN,  OUTPUT);
-  digitalWrite(LED_PIN_RED,    LOW);
-  digitalWrite(LED_PIN_YELLOW, LOW);
-  digitalWrite(LED_PIN_BLUE,   LOW);
-  digitalWrite(LED_PIN_GREEN,  LOW);
-
-  // capture initial button states
-  lastStateRed    = digitalRead(BUTTON_PIN_RED);
-  lastStateYellow = digitalRead(BUTTON_PIN_YELLOW);
-  lastStateBlue   = digitalRead(BUTTON_PIN_BLUE);
-  lastStateGreen  = digitalRead(BUTTON_PIN_GREEN);
-}
-
-// Handle red button & LED
-void handleRed() {
-  uint8_t reading = digitalRead(BUTTON_PIN_RED);
-  uint32_t now   = millis();
-
-  // debounce logic
-  if (reading != lastStateRed) {
-    lastDebounceRed = now;
+  // Set all button pins to INPUT_PULLUP to detect LOW signal on press
+  for (size_t i = 0; i < NUM_BUTTONS; ++i) {
+    pinMode(buttons[i].buttonPin, INPUT_PULLUP);
   }
-  if (now - lastDebounceRed > DEBOUNCE_MS && reading != lastStateRed) {
-    lastStateRed = reading;
-    if (reading == LOW) {
-      Serial.println("Red button pressed");
-    } else {
-      Serial.println("Red button released");
+
+  // Check if the wakeup was caused by EXT1 (external pin event)
+  if (cause == ESP_SLEEP_WAKEUP_EXT1) {
+    // Check which button is currently being pressed (reads LOW)
+    for (size_t i = 0; i < NUM_BUTTONS; ++i) {
+      if (digitalRead(buttons[i].buttonPin) == LOW) {
+        pressedBtn = &buttons[i];
+        break;  // Stop checking once we find the pressed button
+      }
     }
-  }
 
-  // LED follows button state
-  digitalWrite(LED_PIN_RED, (reading == LOW) ? HIGH : LOW);
-}
+    // If a pressed button was identified
+    if (pressedBtn) {
+      Serial.printf("Woke up by %s button\n", pressedBtn->name);
 
-// Handle yellow button & LED
-void handleYellow() {
-  uint8_t reading = digitalRead(BUTTON_PIN_YELLOW);
-  uint32_t now     = millis();
+      // Turn on corresponding LED
+      pinMode(pressedBtn->ledPin, OUTPUT);
+      digitalWrite(pressedBtn->ledPin, HIGH);
 
-  if (reading != lastStateYellow) {
-    lastDebounceYellow = now;
-  }
-  if (now - lastDebounceYellow > DEBOUNCE_MS && reading != lastStateYellow) {
-    lastStateYellow = reading;
-    if (reading == LOW) {
-      Serial.println("Yellow button pressed");
-    } else {
-      Serial.println("Yellow button released");
+      // Keep LED on for 7 seconds
+      delay(LED_DURATION_MS);
+
+      // Turn off the LED
+      digitalWrite(pressedBtn->ledPin, LOW);
     }
+  } else {
+    // If it's a cold boot or wakeup reason is not EXT1
+    Serial.println("Cold boot or unknown wakeup.");
   }
 
-  digitalWrite(LED_PIN_YELLOW, (reading == LOW) ? HIGH : LOW);
-}
-
-// Handle blue button & LED
-void handleBlue() {
-  uint8_t reading = digitalRead(BUTTON_PIN_BLUE);
-  uint32_t now    = millis();
-
-  if (reading != lastStateBlue) {
-    lastDebounceBlue = now;
-  }
-  if (now - lastDebounceBlue > DEBOUNCE_MS && reading != lastStateBlue) {
-    lastStateBlue = reading;
-    if (reading == LOW) {
-      Serial.println("Blue button pressed");
-    } else {
-      Serial.println("Blue button released");
-    }
+  // Prepare wakeup mask for EXT1: any of the button pins can trigger wakeup
+  uint64_t wakeup_mask = 0;
+  for (size_t i = 0; i < NUM_BUTTONS; ++i) {
+    wakeup_mask |= 1ULL << buttons[i].buttonPin;  // Bit-shift to set the pin's bit
   }
 
-  digitalWrite(LED_PIN_BLUE, (reading == LOW) ? HIGH : LOW);
-}
+  // Enable EXT1 wakeup on any of the specified GPIOs being LOW
+  // Note: ESP_EXT1_WAKEUP_ALL_LOW wakes up if *any* one of the specified pins goes LOW
+  esp_sleep_enable_ext1_wakeup(wakeup_mask, ESP_EXT1_WAKEUP_ALL_LOW);
 
-// Handle green button & LED
-void handleGreen() {
-  uint8_t reading = digitalRead(BUTTON_PIN_GREEN);
-  uint32_t now     = millis();
+  // Notify user and go into deep sleep mode
+  Serial.println("Sleeping now... Press any button to wake up.");
+  delay(100);  // Give Serial a moment to finish printing
 
-  if (reading != lastStateGreen) {
-    lastDebounceGreen = now;
-  }
-  if (now - lastDebounceGreen > DEBOUNCE_MS && reading != lastStateGreen) {
-    lastStateGreen = reading;
-    if (reading == LOW) {
-      Serial.println("Green button pressed");
-    } else {
-      Serial.println("Green button released");
-    }
-  }
-
-  digitalWrite(LED_PIN_GREEN, (reading == LOW) ? HIGH : LOW);
+  // Start deep sleep
+  esp_deep_sleep_start();
 }
 
 void loop() {
-  handleRed();
-  handleYellow();
-  handleBlue();
-  handleGreen();
+  // This loop is never reached because the ESP32 goes into deep sleep from setup()
 }
