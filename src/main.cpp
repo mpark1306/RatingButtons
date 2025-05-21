@@ -1,8 +1,11 @@
 #include <Arduino.h>
 #include "esp_sleep.h"
 #include "wifi.h"
-#include "wifi.cpp"
+#include <WiFiClientSecure.h>
+#include <PubSubClient.h>
 
+extern void setupWiFi();
+extern void setupTime();
 // Define a struct to hold button pin, LED pin, and button name
 struct Button {
   gpio_num_t buttonPin;   // GPIO number of the button
@@ -24,11 +27,45 @@ const size_t NUM_BUTTONS = sizeof(buttons) / sizeof(buttons[0]);
 // Duration for which the LED stays ON after waking up (in milliseconds)
 const uint32_t LED_DURATION_MS = 7000;
 
+// MQTT credentials and settings
+const char* mqtt_server = "your-mqtt-broker.com";
+const int mqtt_port = 8883; // Standard TLS port
+const char* mqtt_user = "your_mqtt_username";
+const char* mqtt_pass = "your_mqtt_password";
+const char* mqtt_topic = "ratingbuttons/press";
+
+// MQTT client objects
+WiFiClientSecure espClient;
+PubSubClient mqttClient(espClient);
+
+void setupMQTT() {
+    espClient.setInsecure(); // For demo only! Use certificates in production.
+    mqttClient.setServer(mqtt_server, mqtt_port);
+    while (!mqttClient.connected()) {
+        if (mqttClient.connect("ESP32Client", mqtt_user, mqtt_pass)) {
+            Serial.println("MQTT connected");
+        } else {
+            Serial.print("MQTT connect failed, rc=");
+            Serial.print(mqttClient.state());
+            delay(1000);
+        }
+    }
+}
+
+void publishButtonPress(const char* buttonName) {
+    time_t now;
+    time(&now);
+    char payload[128];
+    snprintf(payload, sizeof(payload),
+        "{\"button\":\"%s\",\"timestamp\":%ld}", buttonName, now);
+    mqttClient.publish(mqtt_topic, payload);
+}
+
 void setup() {
-  Serial.begin(115200);    // Start serial communication
-  delay(1000);             // Give time for Serial Monitor to connect
-  //setupWiFi();
-  //setupTime();
+  Serial.begin(115200);
+  delay(1000);
+  setupWiFi();   // Connect to WiFi
+  setupTime(); 
 
   // Get the cause of wakeup from deep sleep
   esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
